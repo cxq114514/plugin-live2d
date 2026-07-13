@@ -10,6 +10,10 @@ import type {
   StreamMessageStartEvent,
   StreamMessageStopEvent,
 } from "@/live2d/events/stream-message";
+import {
+  hasMarkdownBlockElements,
+  renderMarkdown,
+} from "@/live2d/helpers/renderMarkdown";
 import { isNotEmpty } from "@/live2d/utils/isNotEmpty";
 import { randomSelection } from "@/live2d/utils/randomSelection";
 import { consume } from "@lit/context";
@@ -21,6 +25,7 @@ import { unsafeHTML } from "lit/directives/unsafe-html.js";
 export class Live2dTips extends UnoLitElement {
   private static readonly DEFAULT_BOTTOM_OFFSET = 250;
   private static readonly MODEL_OVERLAP_OFFSET = 20;
+  private static readonly OPACITY_TRANSITION_MS = 1000;
 
   @consume({ context: configContext })
   @property({ attribute: false })
@@ -34,8 +39,10 @@ export class Live2dTips extends UnoLitElement {
   private _bottomOffset = Live2dTips.DEFAULT_BOTTOM_OFFSET;
   private priority = -1;
   private messageTimer: number | null = null;
+  private streamModeResetTimer: number | null = null;
   private streamInactivityTimeout = 60_000;
   // 流式消息模式标志
+  @state()
   private isStreamMode = false;
   private readonly onMessage = (event: Event) => {
     this.handleMessage(event as SendMessageEvent);
@@ -60,6 +67,11 @@ export class Live2dTips extends UnoLitElement {
   }
 
   render(): TemplateResult {
+    const renderedMessage = this.isStreamMode
+      ? renderMarkdown(this._message)
+      : this._message;
+    const isMarkdownBlock =
+      this.isStreamMode && hasMarkdownBlockElements(renderedMessage);
     const classes = {
       "animate-shake": true,
       "animate-delay-5s": true,
@@ -78,13 +90,14 @@ export class Live2dTips extends UnoLitElement {
       "text-ellipsis": true,
       "transition-opacity-1000": true,
       "break-all": true,
+      "live2d-tips-markdown": isMarkdownBlock,
       "opacity-100": this._isShow,
       "opacity-0": !this._isShow,
       "select-none": true,
     };
     return html`
       <div id="live2d-tips" class=${classMap(classes)}>
-        ${unsafeHTML(this._message)}
+        ${unsafeHTML(renderedMessage)}
       </div>
     `;
   }
@@ -110,6 +123,7 @@ export class Live2dTips extends UnoLitElement {
     window.removeEventListener("live2d:stream-message-stop", this.onStreamStop);
     window.removeEventListener("live2d:model-layout", this.onModelLayout);
     this.clearMessageTimer();
+    this.clearStreamModeResetTimer();
   }
 
   handleMessage(e: SendMessageEvent): void {
@@ -125,11 +139,13 @@ export class Live2dTips extends UnoLitElement {
       return;
     }
     this.clearMessageTimer();
+    this.clearStreamModeResetTimer();
     const message = randomSelection(text);
     if (!isNotEmpty(message)) {
       return;
     }
     this.priority = priority;
+    this.isStreamMode = false;
     this._message = message;
     this._isShow = true;
     this.messageTimer = setTimeout(() => {
@@ -144,6 +160,7 @@ export class Live2dTips extends UnoLitElement {
   handleStreamStart(e: StreamMessageStartEvent): void {
     const { timeout } = e.detail;
     const STREAM_PRIORITY = 99999;
+    this.clearStreamModeResetTimer();
     this.priority = STREAM_PRIORITY;
     this.isStreamMode = true;
     this.streamInactivityTimeout = timeout;
@@ -186,7 +203,7 @@ export class Live2dTips extends UnoLitElement {
     this.messageTimer = setTimeout(() => {
       this._isShow = false;
       this.priority = -1;
-      this.isStreamMode = false;
+      this.scheduleStreamModeReset();
     }, showTimeout);
   }
 
@@ -215,10 +232,25 @@ export class Live2dTips extends UnoLitElement {
       () => {
         this._isShow = false;
         this.priority = -1;
-        this.isStreamMode = false;
+        this.scheduleStreamModeReset();
       },
       timeout ?? Number(this.config?.chunkTimeout || 60) * 1000,
     );
+  }
+
+  private scheduleStreamModeReset(): void {
+    this.clearStreamModeResetTimer();
+    this.streamModeResetTimer = setTimeout(() => {
+      this.isStreamMode = false;
+      this.streamModeResetTimer = null;
+    }, Live2dTips.OPACITY_TRANSITION_MS);
+  }
+
+  private clearStreamModeResetTimer(): void {
+    if (this.streamModeResetTimer) {
+      clearTimeout(this.streamModeResetTimer);
+      this.streamModeResetTimer = null;
+    }
   }
 }
 
